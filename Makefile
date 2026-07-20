@@ -1,7 +1,7 @@
 CC = gcc
 
-hello: hello.c
-	$(CC) hello.c -o hello
+server: server.c
+	$(CC) server.c -o server
 
 clean:
-	rm -f *.o hello
+	rm -f *.o server
