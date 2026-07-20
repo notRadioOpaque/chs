@@ -1,9 +1,59 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/_types/_pid_t.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <sys/wait.h>
+
+int handle_client(int client_fd) {
+    char in_buf[1024];
+    ssize_t in_n_bytes;
+    char out_buf[1024];
+    ssize_t out_n_bytes;
+
+    char*  body = "Hello, world!\n";
+    size_t body_len = strlen(body);
+
+    char headers[1024];
+    snprintf(headers, sizeof(headers),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %lu\r\n"
+        "\r\n",
+        body_len);
+
+    /* read incoming bytes from client */
+    in_n_bytes = read(client_fd, in_buf, sizeof(in_buf) - 1);
+
+    if (in_n_bytes < 0) {
+        perror("failed to read bytes from request");
+        exit(EXIT_FAILURE);
+    }
+
+    in_buf[in_n_bytes] = '\0'; // null terminate so we don't read beyond what we should
+
+    printf("%s", in_buf);
+
+    /* compose response for the client */
+    out_buf[0] = '\0';
+    strlcat(out_buf, headers, sizeof(out_buf));
+    strlcat(out_buf, body, sizeof(out_buf));
+
+    /* write response back to client */
+    out_n_bytes = write(client_fd, out_buf, strlen(out_buf));
+
+    if(out_n_bytes < 0) {
+        perror("failed to write response back to client");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("%s\n", out_buf);
+    close(client_fd);
+
+    return 0;
+}
 
 int main() {
     int server_fd;
@@ -43,23 +93,8 @@ int main() {
     while (1) {
         int client_fd;
         socklen_t client_len;
-        char in_buf[1024];
-        ssize_t in_n_bytes;
-        char out_buf[1024];
-        ssize_t out_n_bytes;
 
         struct sockaddr_in client_addr;
-
-        char*  body = "Hello, world!\n";
-        size_t body_len = strlen(body);
-
-        char headers[1024];
-        snprintf(headers, sizeof(headers),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: %lu\r\n"
-            "\r\n",
-            body_len);
 
         memset(&client_addr, 0, sizeof(client_addr)); // zero-ing the client addr struct to avoid surprises :)
         client_len = sizeof(client_addr);
@@ -72,33 +107,23 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        /* read incoming bytes from client */
-        in_n_bytes = read(client_fd, in_buf, sizeof(in_buf) - 1);
+        /* fork happens here to create 2 process, parent and child */
+        /* parent falls back to accepting new connections and child handles the rest pertaining to the accepted conn... */
+        pid_t result = fork();
 
-        if (in_n_bytes < 0) {
-            perror("failed to read bytes from request");
-            exit(EXIT_FAILURE);
+        if (result < 0) {
+            perror("fork failed");
+            close(client_fd);
+        } else if (result == 0) {
+            // we are inside the child process
+            handle_client(client_fd);
+            exit(EXIT_SUCCESS);
+        } else {
+            // we are inside the parent process
+            close(client_fd);
+            waitpid(-1, NULL, WNOHANG);
+            continue;
         }
-
-        in_buf[in_n_bytes] = '\0'; // null terminate so we don't read beyond what we should
-
-        printf("%s", in_buf);
-
-        /* compose response for the client */
-        out_buf[0] = '\0';
-        strlcat(out_buf, headers, sizeof(out_buf));
-        strlcat(out_buf, body, sizeof(out_buf));
-
-        /* write response back to client */
-        out_n_bytes = write(client_fd, out_buf, strlen(out_buf));
-
-        if(out_n_bytes < 0) {
-            perror("failed to write response back to client");
-            exit(EXIT_FAILURE);
-        }
-
-        printf("%s\n", out_buf);
-        close(client_fd);
     }
 
     return 0;
