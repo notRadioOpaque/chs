@@ -7,54 +7,6 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-int handle_client(int client_fd) {
-    char in_buf[1024];
-    ssize_t in_n_bytes;
-    char out_buf[1024];
-    ssize_t out_n_bytes;
-
-    char*  body = "Hello, world!\n";
-    size_t body_len = strlen(body);
-
-    char headers[1024];
-    snprintf(headers, sizeof(headers),
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: %lu\r\n"
-        "\r\n",
-        body_len);
-
-    /* read incoming bytes from client */
-    in_n_bytes = read(client_fd, in_buf, sizeof(in_buf) - 1);
-
-    if (in_n_bytes < 0) {
-        perror("failed to read bytes from request");
-        exit(EXIT_FAILURE);
-    }
-
-    in_buf[in_n_bytes] = '\0'; // null terminate so we don't read beyond what we should
-
-    printf("%s", in_buf);
-
-    /* compose response for the client */
-    out_buf[0] = '\0';
-    strlcat(out_buf, headers, sizeof(out_buf));
-    strlcat(out_buf, body, sizeof(out_buf));
-
-    /* write response back to client */
-    out_n_bytes = write(client_fd, out_buf, strlen(out_buf));
-
-    if(out_n_bytes < 0) {
-        perror("failed to write response back to client");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("%s\n", out_buf);
-    close(client_fd);
-
-    return 0;
-}
-
 struct http_request {
     char method[8];
     char path[256];
@@ -71,13 +23,75 @@ int parse_request(char* raw_request, struct http_request *out) {
         if (token == NULL) return -1;
 
         if (i == 0) {
-            strncpy(out->method, token, sizeof(out->method));
+            strlcpy(out->method, token, sizeof(out->method));
         } else if (i == 1) {
-            strncpy(out->path, token, sizeof(out->path));
+            strlcpy(out->path, token, sizeof(out->path));
         } else {
-            strncpy(out->version, token, sizeof(out->version));
+            strlcpy(out->version, token, sizeof(out->version));
         }
     }
+
+    return 0;
+}
+
+void send_response(int client_fd, int status_code, const char *reason, const char *body) {
+    char out_buf[1024];
+    ssize_t out_n_bytes;
+    char headers[1024];
+
+    size_t body_len = strlen(body);
+
+    snprintf(headers, sizeof(headers),
+        "HTTP/1.1 %i %s\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %lu\r\n"
+        "\r\n",
+        status_code, reason, body_len);
+
+    /* compose response for the client */
+    out_buf[0] = '\0';
+    strlcat(out_buf, headers, sizeof(out_buf));
+    strlcat(out_buf, body, sizeof(out_buf));
+
+    /* write response back to client */
+    out_n_bytes = write(client_fd, out_buf, strlen(out_buf));
+
+    if(out_n_bytes < 0) {
+        perror("failed to write response back to client");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("%s\n", out_buf);
+}
+
+int handle_client(int client_fd) {
+    char in_buf[1024];
+    ssize_t in_n_bytes;
+    char*  body = "Hello, world!\n";
+
+    struct http_request req;
+
+    /* read incoming bytes from client */
+    in_n_bytes = read(client_fd, in_buf, sizeof(in_buf) - 1);
+
+    if (in_n_bytes < 0) {
+        perror("failed to read bytes from request");
+        exit(EXIT_FAILURE);
+    }
+
+    in_buf[in_n_bytes] = '\0'; // null terminate so we don't read beyond what we should
+
+    int res = parse_request(in_buf, &req);
+
+    if (res < 0) {
+        send_response(client_fd, 400, "Bad Request", "");
+        close(client_fd);
+
+        return -1;
+    }
+
+    send_response(client_fd, 200, "Ok", body);
+    close(client_fd);
 
     return 0;
 }
