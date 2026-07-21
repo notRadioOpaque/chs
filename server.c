@@ -55,6 +55,33 @@ int handle_client(int client_fd) {
     return 0;
 }
 
+struct http_request {
+    char method[8];
+    char path[256];
+    char version[16];
+};
+
+int parse_request(char* raw_request, struct http_request *out) {
+    char *request_line = strstr(raw_request, "\r\n");
+    if (request_line == NULL) return -1;
+    *request_line = '\0';
+
+    for (int i = 0; i < 3; i++) {
+        char *token = strtok((i == 0 ? raw_request : NULL), " ");
+        if (token == NULL) return -1;
+
+        if (i == 0) {
+            strncpy(out->method, token, sizeof(out->method));
+        } else if (i == 1) {
+            strncpy(out->path, token, sizeof(out->path));
+        } else {
+            strncpy(out->version, token, sizeof(out->version));
+        }
+    }
+
+    return 0;
+}
+
 int main() {
     int server_fd;
     int rc;
