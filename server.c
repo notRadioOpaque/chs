@@ -1,9 +1,13 @@
+#include <_stdlib.h>
+#include <_string.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/_types/_pid_t.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/syslimits.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -30,6 +34,44 @@ int parse_request(char* raw_request, struct http_request *out) {
             strlcpy(out->version, token, sizeof(out->version));
         }
     }
+
+    return 0;
+}
+
+int resolve_safe_path(const char *root, const char *req_path, char *resolved_out) {
+    char root_buf[PATH_MAX];
+    char combined_buf[PATH_MAX];
+    char resolved_buf[PATH_MAX];
+
+    char *resolved_root = realpath(root, root_buf);
+    if (resolved_root == NULL) {
+        perror("file not found");
+
+        return -1;
+    }
+
+    /* concat the paths */
+    combined_buf[0] = '\0';
+    strlcat(combined_buf, root, sizeof(combined_buf));
+    strlcat(combined_buf, req_path, sizeof(combined_buf));
+
+    char *resolved_combined = realpath(combined_buf, resolved_buf);
+    if (resolved_combined == NULL) {
+        perror("file not found");
+
+        return -1;
+    }
+
+    size_t root_len = strlen(root_buf);
+    if (strncmp(resolved_buf, root_buf, root_len) != 0) {
+        return -1;
+    }
+
+    if (resolved_buf[root_len] != '\0' && resolved_buf[root_len] != '/') {
+        return -1;
+    }
+
+    strlcpy(resolved_out, resolved_buf, PATH_MAX);
 
     return 0;
 }
