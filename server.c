@@ -1,15 +1,13 @@
-#include <_stdlib.h>
-#include <_string.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/_types/_pid_t.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/syslimits.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 struct http_request {
     char method[8];
@@ -87,6 +85,7 @@ void send_response(int client_fd, int status_code, const char *reason, const cha
         "HTTP/1.1 %i %s\r\n"
         "Content-Type: text/plain\r\n"
         "Content-Length: %lu\r\n"
+        "Connection: close\r\n"
         "\r\n",
         status_code, reason, body_len);
 
@@ -102,18 +101,75 @@ void send_response(int client_fd, int status_code, const char *reason, const cha
         perror("failed to write response back to client");
         exit(EXIT_FAILURE);
     }
+}
 
-    printf("%s\n", out_buf);
+void send_file_response(int client_fd, int file_fd, size_t file_size) {
+    char headers[1024];
+    char chunk[4096];
+
+    snprintf(headers, sizeof(headers),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        file_size);
+
+    // send headers first, as their own write
+    int header_bytes = write(client_fd, headers, strlen(headers));
+
+    if(header_bytes < 0) {
+        perror("failed to write response back to client");
+        close(file_fd);
+        close(client_fd);
+
+        exit(EXIT_FAILURE);
+    }
+
+    while (1) {
+        int res = read(file_fd, chunk, sizeof(chunk));
+
+        if (res > 0) {
+            int n_bytes = write(client_fd, chunk, res);
+
+            if (n_bytes < 0) {
+                perror("failed to write response back to client");
+                close(file_fd);
+                close(client_fd);
+
+                exit(EXIT_FAILURE);
+            }
+        } else if (res == 0) {
+            // end of file reached
+            close(file_fd);
+            close(client_fd);
+
+            break;
+        } else {
+            // write fails
+            perror("failed to write response back to client");
+            close(file_fd);
+            close(client_fd);
+
+            exit(EXIT_FAILURE);
+        }
+    }
 }
 
 int handle_client(int client_fd) {
     char in_buf[1024];
     ssize_t in_n_bytes;
-    char*  body = "Hello, world!\n";
+    char* body = "Hello, world!\n";
+    char *root = "./public";
+    char resolved[PATH_MAX];
 
     struct http_request req;
+    struct stat file_stat;
 
     /* read incoming bytes from client */
+    /* currently handling one read and parse per connection which isn't rich esp for keep-alive connections expected by most browsers but that's a fix for the near future */
+
+    /* TODO: loop read and parse to account for keep-alive connection */
     in_n_bytes = read(client_fd, in_buf, sizeof(in_buf) - 1);
 
     if (in_n_bytes < 0) {
@@ -132,8 +188,40 @@ int handle_client(int client_fd) {
         return -1;
     }
 
-    send_response(client_fd, 200, "Ok", body);
-    close(client_fd);
+    /* resolving path to prevent path traversal and handle path mismatch */
+    int resolve_res = resolve_safe_path(root, req.path, resolved);
+
+    if (resolve_res < 0) {
+        send_response(client_fd, 404, "Not Found", "");
+        close(client_fd);
+
+        return -1;
+    }
+
+    int file_fd = open(resolved, O_RDONLY);
+
+    if (file_fd < 0) {
+        perror("failed to open file");
+        send_response(client_fd, 404, "Not Found", "");
+        close(client_fd);
+        return -1;
+    }
+
+    if (fstat(file_fd, &file_stat) < 0) {
+        perror("failed to stat file");
+        close(file_fd);
+        send_response(client_fd, 500, "Internal Server Error", "");
+        close(client_fd);
+        return -1;
+    }
+    if (!S_ISREG(file_stat.st_mode)) {
+        close(file_fd);
+        send_response(client_fd, 404, "Not Found", "");
+        close(client_fd);
+        return -1;
+    }
+
+    send_file_response(client_fd, file_fd, file_stat.st_size); // already closing the connection within this fn.
 
     return 0;
 }
